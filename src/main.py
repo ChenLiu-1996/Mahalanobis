@@ -305,6 +305,7 @@ def train(args: SimpleNamespace) -> None:
     os.makedirs(os.path.dirname(args.model_save_path), exist_ok=True)
 
     # Loss function.
+    loss_fn_pred = torch.nn.CrossEntropyLoss()
     if args.loss_fn == 'supervised':
         loss_fn = torch.nn.CrossEntropyLoss()
     elif args.loss_fn == 'simclr':
@@ -314,58 +315,20 @@ def train(args: SimpleNamespace) -> None:
     elif args.loss_fn == 'barlow_twins':
         loss_fn = barlow_twins
     else:
-        raise ValueError(f'loss function `{args.loss_fn}` not defined.')
+        raise ValueError(f'loss function `{args.loss_fn}` not supported.')
 
     val_metric = 'val_auroc'
 
     # Compute the results before training.
-    val_loss, val_acc, dse_Z, cse_Z, dsmi_Z_X, csmi_Z_X, dsmi_Z_Y, csmi_Z_Y, \
-        dsmi_blockZ_Xs, dsmi_blockZ_Ys, precomputed_clusters_X = validate_epoch(
-        config=args,
-        val_loader=val_loader,
-        model=model,
-        device=device,
-        loss_fn_classification=loss_fn,
-        precomputed_clusters_X=None)
+    val_loss, val_acc, val_auroc = infer(loader=val_loader, model=model, loss_fn_pred=loss_fn_pred, device=device)
 
-    state_dict = {
-        'train_loss': 'Not started',
-        'train_acc': 'Not started',
-        'val_loss': val_loss,
-        'val_acc': val_acc,
-        'acc_diverg': 'Not started',
-    }
-    log('Epoch: %d. %s' % (0, print_state_dict(state_dict)),
-        filepath=log_path,
-        to_console=False)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.learning_rate))
 
-    results_dict = {
-        'epoch': [0],
-        'dse_Z': [dse_Z],
-        'cse_Z': [cse_Z],
-        'dsmi_Z_X': [dsmi_Z_X],
-        'csmi_Z_X': [csmi_Z_X],
-        'dsmi_Z_Y': [dsmi_Z_Y],
-        'csmi_Z_Y': [csmi_Z_Y],
-        'val_acc': [0],
-        'dsmi_blockZ_Xs': [np.array(dsmi_blockZ_Xs)],
-        'dsmi_blockZ_Ys': [np.array(dsmi_blockZ_Ys)],
-    }
+    lr_scheduler = LinearWarmupCosineAnnealingLR(optimizer=optimizer,
+                                                 warmup_epochs=min(20, args.epochs_pretrain),
+                                                 warmup_start_lr=args.learning_rate_pretrain * 1e-2,
+                                                 max_epochs=args.epochs_pretrain)
 
-    if args.loss_fn in ['supervised', 'wronglabel']:
-        opt = torch.optim.AdamW(list(model.encoder.parameters()) +
-                                list(model.linear.parameters()),
-                                lr=float(args.learning_rate))
-    elif args.loss_fn == 'simclr':
-        opt = torch.optim.AdamW(list(model.encoder.parameters()) +
-                                list(model.projection_head.parameters()),
-                                lr=float(args.learning_rate))
-
-    lr_scheduler = LinearWarmupCosineAnnealingLR(optimizer=opt,
-                                                 warmup_epochs=min(
-                                                     10,
-                                                     args.max_epoch // 5),
-                                                 max_epochs=args.max_epoch)
 
     best_val_metric = 0
     best_model = None
@@ -417,9 +380,9 @@ def train(args: SimpleNamespace) -> None:
                 total_count_loss += B
                 total_count_acc += B
 
-                opt.zero_grad()
+                optimizer.zero_grad()
                 loss.backward()
-                opt.step()
+                optimizer.step()
 
             elif args.loss_fn == 'simclr':
                 # Using SimCLR.
@@ -443,9 +406,9 @@ def train(args: SimpleNamespace) -> None:
                 state_dict['train_simclr_pseudoAcc'] += pseudo_acc * B
                 total_count_loss += B
 
-                opt.zero_grad()
+                optimizer.zero_grad()
                 loss.backward()
-                opt.step()
+                optimizer.step()
 
         if args.loss_fn == 'simclr':
             state_dict['train_simclr_pseudoAcc'] /= total_count_loss
@@ -479,11 +442,11 @@ def train(args: SimpleNamespace) -> None:
         else:
             val_loss, val_acc, dse_Z, cse_Z, dsmi_Z_X, csmi_Z_X, dsmi_Z_Y, csmi_Z_Y, \
                 dsmi_blockZ_Xs, dsmi_blockZ_Ys, _ = validate_epoch(
-                config=args,
+                args=args,
                 val_loader=val_loader,
                 model=model,
                 device=device,
-                loss_fn_classification=loss_fn,
+                loss_fn=loss_fn,
                 precomputed_clusters_X=precomputed_clusters_X)
             state_dict['val_loss'] = val_loss
             state_dict['val_acc'] = val_acc
@@ -569,153 +532,28 @@ def train(args: SimpleNamespace) -> None:
     return
 
 
-def validate_epoch(config: SimpleNamespace,
-                   val_loader: torch.utils.data.DataLoader,
-                   model: torch.nn.Module, device: torch.device,
-                   loss_fn_classification: torch.nn.Module,
-                   precomputed_clusters_X: np.array):
+@torch.no_grad()
+def infer(loader, model, loss_fn_pred, device):
+    avg_loss = 0
+    y_true_arr, y_pred_arr = None, None
 
-    correct, total_count_loss, total_count_acc = 0, 0, 0
-    val_loss, val_acc = 0, 0
+    for x, y_true in loader:
+        x = x.to(device)
+        y_pred = model(x)
+        loss = loss_fn_pred(y_pred, y_true.to(device))
+        avg_loss += loss.item()
 
-    tensor_X = None  # input
-    tensor_Y = None  # label
-    tensor_Z = None  # latent
-
-    if config.block_by_block:
-        '''Get block by block activations'''
-        activation = {}
-
-        def getActivation(name):
-
-            def hook(model, input, output):
-                activation[name] = output.detach()
-
-            return hook
-
-        handlers_list = []
-        block_index_list = []
-        # register forward hooks on key layers
-        if config.model == 'resnet' or config.model == 'resnext':
-            layers_names = timm_model_blocks_map[config.model]
-            block_index_list = list(range(len(layers_names)))
-            for i, layer_name in enumerate(layers_names):
-                layer = getattr(model.encoder, layer_name)
-                handlers_list.append(
-                    layer.register_forward_hook(
-                        getActivation('blocks_' + str(i))))
+        if y_true_arr is None:
+            y_true_arr = y_true.detach().cpu().numpy()
+            y_pred_arr = y_pred.detach().cpu().numpy()
         else:
-            main_blocks_name, block_cnt = timm_model_blocks_map[
-                config.model][0], timm_model_blocks_map[config.model][1]
-            block_index_list = list(range(block_cnt))
+            y_true_arr = np.vstack((y_true_arr, y_true.detach().cpu().numpy()))
+            y_pred_arr = np.vstack((y_pred_arr, y_pred.detach().cpu().numpy()))
 
-            for i in block_index_list:
-                layer = getattr(model.encoder, main_blocks_name)[i]
-                handlers_list.append(
-                    layer.register_forward_hook(
-                        getActivation('blocks_' + str(i))))
-
-    model.eval()
-    if config.block_by_block:
-        blocks_features = [[] for _ in block_index_list]
-    with torch.no_grad():
-        for x, y_true in tqdm(val_loader):
-            B = x.shape[0]
-            assert config.in_channels in [1, 3]
-            if config.in_channels == 1:
-                # Repeat the channel dimension: 1 channel -> 3 channels.
-                x = x.repeat(1, 3, 1, 1)
-            x, y_true = x.to(device), y_true.to(device)
-
-            y_pred = model(x)
-            loss = loss_fn_classification(y_pred, y_true)
-            val_loss += loss.item() * B
-            correct += torch.sum(torch.argmax(y_pred, dim=-1) == y_true).item()
-            total_count_acc += B
-            if config.method != 'simclr':
-                total_count_loss += B
-
-            ## Record data for DSE and DSMI computation.
-
-            # Downsample the input image to reduce memory usage.
-            curr_X = torch.nn.functional.interpolate(
-                x, size=(64, 64)).cpu().numpy().reshape(x.shape[0], -1)
-            curr_Y = y_true.cpu().numpy()
-            curr_Z = model.encode(x).cpu().numpy()
-            if tensor_X is None:
-                tensor_X, tensor_Y, tensor_Z = curr_X, curr_Y, curr_Z
-            else:
-                tensor_X = np.vstack((tensor_X, curr_X))
-                tensor_Y = np.hstack((tensor_Y, curr_Y))
-                tensor_Z = np.vstack((tensor_Z, curr_Z))
-
-            if config.block_by_block:
-                # Collect block activations from key layers
-                for i in block_index_list:
-                    curr_block_features = activation['blocks_' +
-                                                     str(i)].cpu().numpy()
-                    curr_block_features = curr_block_features.reshape(
-                        curr_block_features.shape[0], -1)
-                    blocks_features[i].append(curr_block_features)  # (B, D)
-
-    if config.block_by_block:
-        for i in block_index_list:
-            blocks_features[i] = np.vstack(blocks_features[i])
-            handlers_list[i].remove()
-
-    if config.dataset == 'tinyimagenet':
-        # For DSE, subsample for faster computation.
-        dse_Z = diffusion_spectral_entropy(
-            embedding_vectors=tensor_Z[:10000, :])
-        cse_Z = diffusion_spectral_entropy(
-            embedding_vectors=tensor_Z[:10000, :],
-            classic_shannon_entropy=True)
-    else:
-        dse_Z = diffusion_spectral_entropy(embedding_vectors=tensor_Z)
-        cse_Z = diffusion_spectral_entropy(embedding_vectors=tensor_Z,
-                                           classic_shannon_entropy=True)
-
-    dsmi_Z_X, precomputed_clusters_X = diffusion_spectral_mutual_information(
-        embedding_vectors=tensor_Z,
-        reference_vectors=tensor_X,
-        n_clusters=config.num_classes,
-        precomputed_clusters=precomputed_clusters_X)
-    csmi_Z_X, precomputed_clusters_X = diffusion_spectral_mutual_information(
-        embedding_vectors=tensor_Z,
-        reference_vectors=tensor_X,
-        n_clusters=config.num_classes,
-        precomputed_clusters=precomputed_clusters_X,
-        classic_shannon_entropy=True)
-
-    dsmi_Z_Y, _ = diffusion_spectral_mutual_information(
-        embedding_vectors=tensor_Z, reference_vectors=tensor_Y)
-    csmi_Z_Y, _ = diffusion_spectral_mutual_information(
-        embedding_vectors=tensor_Z,
-        reference_vectors=tensor_Y,
-        classic_shannon_entropy=True)
-
-    dsmi_blockZ_Xs, dsmi_blockZ_Ys = [], []
-    if config.block_by_block:
-        for i in block_index_list:
-            tensor_blockZ = blocks_features[i]
-            dsmi_blockZ_X, _ = diffusion_spectral_mutual_information(
-                embedding_vectors=tensor_blockZ,
-                reference_vectors=tensor_X,
-                precomputed_clusters=precomputed_clusters_X,
-            )
-            dsmi_blockZ_Xs.append(dsmi_blockZ_X)
-            dsmi_blockZ_Y, _ = diffusion_spectral_mutual_information(
-                embedding_vectors=tensor_blockZ, reference_vectors=tensor_Y)
-            dsmi_blockZ_Ys.append(dsmi_blockZ_Y)
-
-    if config.method == 'simclr':
-        val_loss = torch.nan
-    else:
-        val_loss /= total_count_loss
-    val_acc = correct / total_count_acc * 100
-
-    return (val_loss, val_acc, dse_Z, cse_Z, dsmi_Z_X, csmi_Z_X, dsmi_Z_Y,
-            csmi_Z_Y, dsmi_blockZ_Xs, dsmi_blockZ_Ys, precomputed_clusters_X)
+    avg_loss /= len(loader)
+    acc = np.mean(accuracy_score(y_true_arr, y_pred_arr))
+    auroc = np.mean(roc_auc_score(y_true_arr, y_pred_arr))
+    return avg_loss, acc, auroc
 
 
 def linear_probing(config: SimpleNamespace,
@@ -749,11 +587,11 @@ def linear_probing(config: SimpleNamespace,
             loss_fn_classification=loss_fn_classification)
 
     _, val_acc, dse_Z, cse_Z, dsmi_Z_X, csmi_Z_X, dsmi_Z_Y, csmi_Z_Y, dsmi_blockZ_Xs, dsmi_blockZ_Ys, _ = validate_epoch(
-        config=config,
+        args=config,
         val_loader=val_loader,
         model=model,
         device=device,
-        loss_fn_classification=loss_fn_classification,
+        loss_fn=loss_fn_classification,
         precomputed_clusters_X=precomputed_clusters_X)
 
     return probing_acc, val_acc, dse_Z, cse_Z, dsmi_Z_X, csmi_Z_X, dsmi_Z_Y, csmi_Z_Y, dsmi_blockZ_Xs, dsmi_blockZ_Ys, precomputed_clusters_X
@@ -805,9 +643,11 @@ if __name__ == '__main__':
     parser.add_argument('--loss-fn', type=str, default='simclr') # ['simclr', 'simsiam', 'barlow_twins', 'supervised']
     parser.add_argument('--mrl', action='store_true')            # Whether to use Mahalanobis representation learning.
     parser.add_argument('--full-grad', action='store_true')      # Whether to use full gradient for similarity computation.
-    parser.add_argument('--lr', help='learning rate', type=float, default=1e-2)
     parser.add_argument('--batch-size', type=int, default=64)
-    parser.add_argument('--num-epoch', type=int, default=50)
+    parser.add_argument('--epochs-pretrain', type=int, default=50)
+    parser.add_argument('--epochs-finetune', type=int, default=50)
+    parser.add_argument('--lr-pretrain', type=float, default=1e-2)
+    parser.add_argument('--lr-finetune', type=float, default=1e-4)
     parser.add_argument('--num-workers', type=int, default=8)
     parser.add_argument('--random-seed', type=int, default=1)
     parser.add_argument('--dataset-dir', type=str, default='$ROOT_DIR/data/')
@@ -819,7 +659,7 @@ if __name__ == '__main__':
     args.dataset_dir = args.dataset_dir.replace('$ROOT_DIR', ROOT_DIR)
     args.results_dir = args.results_dir.replace('$ROOT_DIR', ROOT_DIR)
 
-    curr_run_identifier = f'dataset-{args.dataset}_model-{args.model}_loss-fn-{args.loss_fn}_mrl-{args.mrl}_full-grad-{args.full_grad}_lr-{args.lr}_seed-{args.random_seed}'
+    curr_run_identifier = f'dataset-{args.dataset}_model-{args.model}_loss-fn-{args.loss_fn}_mrl-{args.mrl}_full-grad-{args.full_grad}_seed-{args.random_seed}'
     args.log_path = os.path.join(args.results_dir, curr_run_identifier, 'log.txt')
     args.model_save_path = os.path.join(args.results_dir, curr_run_identifier, 'model.pty')
 
