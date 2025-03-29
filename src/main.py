@@ -471,18 +471,19 @@ def train_epoch(model: torch.nn.Module,
             p2 = model.project(z2)
 
             if args.full_grad:
-                grad_z1 = torch.autograd.grad(outputs=z1, inputs=x_aug1, grad_outputs=torch.ones_like(z1), retain_graph=True)
-                grad_z2 = torch.autograd.grad(outputs=z2, inputs=x_aug2, grad_outputs=torch.ones_like(z2), retain_graph=True)
-                grad_p1 = torch.autograd.grad(outputs=p1, inputs=x_aug1, grad_outputs=torch.ones_like(p1), retain_graph=True)
-                grad_p2 = torch.autograd.grad(outputs=p2, inputs=x_aug2, grad_outputs=torch.ones_like(p2), retain_graph=True)
+                grad_z1 = torch.autograd.grad(outputs=z1, inputs=x_aug1, grad_outputs=torch.ones_like(z1), create_graph=True)
+                grad_z2 = torch.autograd.grad(outputs=z2, inputs=x_aug2, grad_outputs=torch.ones_like(z2), create_graph=True)
+                grad_p1 = torch.autograd.grad(outputs=p1, inputs=x_aug1, grad_outputs=torch.ones_like(p1), create_graph=True)
+                grad_p2 = torch.autograd.grad(outputs=p2, inputs=x_aug2, grad_outputs=torch.ones_like(p2), create_graph=True)
                 assert len(grad_z1) == len(grad_z2) == len(grad_p1) == len(grad_p2) == 1
                 batch_size = x_aug1.shape[0]
-                z1 = grad_z1[0].reshape(batch_size, -1)
-                z2 = grad_z2[0].reshape(batch_size, -1)
-                p1 = grad_p1[0].reshape(batch_size, -1)
-                p2 = grad_p2[0].reshape(batch_size, -1)
+                z1 = grad_z1[0].view(batch_size, -1)
+                z2 = grad_z2[0].view(batch_size, -1)
+                p1 = grad_p1[0].view(batch_size, -1)
+                p2 = grad_p2[0].view(batch_size, -1)
 
             loss = loss_fn(p1_batch=p1, p2_batch=p2, z1_batch=z1, z2_batch=z2)
+            import pdb; pdb.set_trace()
             loss_value += loss.item()
 
         optimizer.zero_grad()
