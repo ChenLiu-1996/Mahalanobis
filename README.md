@@ -1,4 +1,4 @@
-# Mahhalanobis Representation Learning
+# Mahalanobis Representation Learning
 
 
 ## Installation
@@ -6,7 +6,7 @@
 ```bash
 conda create --name mrl pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.3 -c pytorch -y
 conda activate mrl
-conda install -c anaconda scikit-image pillow matplotlib seaborn tqdm
+conda install scikit-image scikit-learn pillow matplotlib seaborn tqdm -c anaconda -y
 python -m pip install tinyimagenet
 python -m pip install natsort
 python -m pip install phate

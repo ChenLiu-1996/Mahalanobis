@@ -1,8 +1,9 @@
+from typing import Union
 from types import SimpleNamespace
 import argparse
 import os
 import sys
-from sklearn.metrics import roc_auc_score, accuracy_score, precision_recall_curve
+from sklearn.metrics import roc_auc_score, accuracy_score
 
 import numpy as np
 import torch
@@ -10,14 +11,13 @@ import torchvision
 from tinyimagenet import TinyImageNet
 from tqdm import tqdm
 
-
-import_dir = '/'.join(os.path.realpath(__file__).split('/')[:-4])
+import_dir = '/'.join(os.path.realpath(__file__).split('/')[:-2])
 sys.path.insert(0, import_dir + '/src/model/')
 from timm_models import build_timm_model
 sys.path.insert(0, import_dir + '/src/nn_utils/')
 from log import log
 from seed import seed_everything
-from simclr import SingleInstanceTwoView
+from ssl_aug import SingleInstanceTwoView
 from scheduler import LinearWarmupCosineAnnealingLR
 from extend import ExtendedDataset
 
@@ -73,52 +73,50 @@ def get_dataloaders(args: SimpleNamespace):
     # NOTE: To accommodate the ViT models, we resize all images to 224x224.
     imsize = 224
 
-    if args.loss_fn == 'supervised':
-        if args.in_channels == 3:
-            transform_train = torchvision.transforms.Compose([
-                torchvision.transforms.Resize(
-                    imsize,
-                    interpolation=torchvision.transforms.InterpolationMode.
-                    BICUBIC),
-                torchvision.transforms.RandomResizedCrop(
-                    imsize,
-                    scale=(0.6, 1.6),
-                    interpolation=torchvision.transforms.InterpolationMode.
-                    BICUBIC),
-                torchvision.transforms.RandomHorizontalFlip(p=0.5),
-                torchvision.transforms.RandomApply([
-                    torchvision.transforms.ColorJitter(
-                        brightness=0.8, contrast=0.8, saturation=0.8, hue=0.2)
-                ],
-                                                   p=0.4),
-                torchvision.transforms.RandomGrayscale(p=0.2),
-                torchvision.transforms.ToTensor(),
-                torchvision.transforms.Normalize(mean=dataset_mean,
-                                                 std=dataset_std)
-            ])
-        else:
-            transform_train = torchvision.transforms.Compose([
-                torchvision.transforms.Resize(
-                    imsize,
-                    interpolation=torchvision.transforms.InterpolationMode.
-                    BICUBIC),
-                torchvision.transforms.RandomResizedCrop(
-                    imsize,
-                    scale=(0.6, 1.6),
-                    interpolation=torchvision.transforms.InterpolationMode.
-                    BICUBIC),
-                torchvision.transforms.RandomHorizontalFlip(p=0.5),
-                torchvision.transforms.ToTensor(),
-                torchvision.transforms.Normalize(mean=dataset_mean,
-                                                 std=dataset_std)
-            ])
+    if args.in_channels == 3:
+        transform_train = torchvision.transforms.Compose([
+            torchvision.transforms.Resize(
+                imsize,
+                interpolation=torchvision.transforms.InterpolationMode.
+                BICUBIC),
+            torchvision.transforms.RandomResizedCrop(
+                imsize,
+                scale=(0.6, 1.6),
+                interpolation=torchvision.transforms.InterpolationMode.
+                BICUBIC),
+            torchvision.transforms.RandomHorizontalFlip(p=0.5),
+            torchvision.transforms.RandomApply([
+                torchvision.transforms.ColorJitter(
+                    brightness=0.8, contrast=0.8, saturation=0.8, hue=0.2)
+            ],
+                                                p=0.4),
+            torchvision.transforms.RandomGrayscale(p=0.2),
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Normalize(mean=dataset_mean,
+                                                std=dataset_std)
+        ])
+    else:
+        transform_train = torchvision.transforms.Compose([
+            torchvision.transforms.Resize(
+                imsize,
+                interpolation=torchvision.transforms.InterpolationMode.
+                BICUBIC),
+            torchvision.transforms.RandomResizedCrop(
+                imsize,
+                scale=(0.6, 1.6),
+                interpolation=torchvision.transforms.InterpolationMode.
+                BICUBIC),
+            torchvision.transforms.RandomHorizontalFlip(p=0.5),
+            torchvision.transforms.ToTensor(),
+            torchvision.transforms.Normalize(mean=dataset_mean,
+                                                std=dataset_std)
+        ])
 
-    elif args.loss_fn in ['simclr', 'simsiam', 'barlow_twins']:
-        transform_train = SingleInstanceTwoView(imsize=imsize,
+    transform_train_ssl = SingleInstanceTwoView(imsize=imsize,
                                                 mean=dataset_mean,
                                                 std=dataset_std)
 
-    transform_val = torchvision.transforms.Compose([
+    transform_test = torchvision.transforms.Compose([
         torchvision.transforms.Resize(
             imsize,
             interpolation=torchvision.transforms.InterpolationMode.BICUBIC),
@@ -128,58 +126,81 @@ def get_dataloaders(args: SimpleNamespace):
     ])
 
     if args.dataset in ['mnist', 'cifar10', 'cifar100']:
-        train_dataset = torchvision_dataset(args.dataset_dir,
+        train_set = torchvision_dataset(args.dataset_dir,
+                                        train=True,
+                                        download=True,
+                                        transform=transform_train)
+        train_set_ssl = torchvision_dataset(args.dataset_dir,
                                             train=True,
                                             download=True,
-                                            transform=transform_train)
-        val_dataset = torchvision_dataset(args.dataset_dir,
-                                          train=False,
-                                          download=True,
-                                          transform=transform_val)
+                                            transform=transform_train_ssl)
+        test_set = torchvision_dataset(args.dataset_dir,
+                                       train=False,
+                                       download=True,
+                                       transform=transform_test)
 
     elif args.dataset in ['stanfordcars', 'stl10', 'food101', 'flowers102']:
-        train_dataset = torchvision_dataset(args.dataset_dir,
+        train_set = torchvision_dataset(args.dataset_dir,
+                                        split='train',
+                                        download=True,
+                                        transform=transform_train)
+        train_set_ssl = torchvision_dataset(args.dataset_dir,
                                             split='train',
                                             download=True,
-                                            transform=transform_train)
-        val_dataset = torchvision_dataset(args.dataset_dir,
-                                          split='test',
-                                          download=True,
-                                          transform=transform_val)
+                                            transform=transform_train_ssl)
+        test_set = torchvision_dataset(args.dataset_dir,
+                                       split='test',
+                                       download=True,
+                                       transform=transform_test)
 
         if args.dataset == 'stl10':
             # Training set has too few images (5000 images in total).
             # Let's augment it into a bigger dataset.
-            train_dataset = ExtendedDataset(train_dataset,
+            train_set = ExtendedDataset(train_set,
+                                        desired_len=10 *
+                                        len(train_set))
+            train_set_ssl = ExtendedDataset(train_set,
                                             desired_len=10 *
-                                            len(train_dataset))
+                                            len(train_set_ssl))
 
     elif args.dataset in ['tinyimagenet', 'imagenet']:
-        train_dataset = torchvision_dataset(args.dataset_dir,
+        train_set = torchvision_dataset(args.dataset_dir,
+                                        split='train',
+                                        transform=transform_train)
+        train_set_ssl = torchvision_dataset(args.dataset_dir,
                                             split='train',
-                                            transform=transform_train)
-        val_dataset = torchvision_dataset(args.dataset_dir,
-                                          split='val',
-                                          transform=transform_val)
+                                            transform=transform_train_ssl)
+        test_set = torchvision_dataset(args.dataset_dir,
+                                       split='val',
+                                       transform=transform_test)
 
-    train_loader = torch.utils.data.DataLoader(train_dataset,
+    train_loader = torch.utils.data.DataLoader(train_set,
                                                batch_size=args.batch_size,
                                                num_workers=args.num_workers,
                                                shuffle=True,
-                                               pin_memory=True)
-    val_loader = torch.utils.data.DataLoader(val_dataset,
+                                               pin_memory=True,
+                                               drop_last=True)
+    train_loader_ssl = torch.utils.data.DataLoader(train_set_ssl,
+                                                   batch_size=args.batch_size,
+                                                   num_workers=args.num_workers,
+                                                   shuffle=True,
+                                                   pin_memory=True,
+                                                   drop_last=True)
+    val_loader = torch.utils.data.DataLoader(test_set,
                                              batch_size=args.batch_size,
                                              num_workers=args.num_workers,
                                              shuffle=False,
-                                             pin_memory=True)
+                                             pin_memory=True,
+                                             drop_last=True)
 
-    return (train_loader, val_loader), args
+    return (train_loader, train_loader_ssl, val_loader), args
 
 
-def simsiam(z1_batch: torch.Tensor,
+def simsiam(p1_batch: torch.Tensor,
+            p2_batch: torch.Tensor,
+            z1_batch: torch.Tensor,
             z2_batch: torch.Tensor,
-            p1_batch: torch.Tensor,
-            p2_batch: torch.Tensor) -> torch.Tensor:
+            **kwargs) -> torch.Tensor:
     '''
     SimSiam loss.
     (Algorithm 1 in the SimSiam paper https://arxiv.org/abs/2011.10566).
@@ -198,7 +219,8 @@ def __neg_cos_sim(p: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
 
 def simclr(p1_batch: torch.Tensor,
            p2_batch: torch.Tensor,
-           temperature: float = 0.5) -> torch.Tensor:
+           temperature: float = 0.5,
+           **kwargs) -> torch.Tensor:
     '''
     SimCLR loss.
     (Equation 1 in the SimCLR paper https://arxiv.org/abs/2002.05709).
@@ -237,7 +259,8 @@ def simclr(p1_batch: torch.Tensor,
 
 def barlow_twins(p1_batch: torch.Tensor,
                  p2_batch: torch.Tensor,
-                 lambda_off_diag: float = 1e-2) -> torch.Tensor:
+                 lambda_off_diag: float = 1e-2,
+                 **kwargs) -> torch.Tensor:
     '''
     Barlow twins loss.
     (Algorithm 1 in the Barlow Twins paper https://arxiv.org/pdf/2103.03230).
@@ -279,269 +302,223 @@ def barlow_twins(p1_batch: torch.Tensor,
     return loss
 
 
-def train(args: SimpleNamespace) -> None:
+def main(args: SimpleNamespace) -> None:
     '''
     The main function of training and evaluation.
+    1. Train for `args.epochs_pretrain` epochs. No validation set.
+    2. Linear probe or fine-tune for `args.epochs_finetune` epochs.
+    3. Evaluate on test set.
     '''
-    # Log the config.
 
+    # Log the config.
     config_str = 'Config: \n'
-    for key in args.keys():
-        config_str += '%s: %s\n' % (key, args[key])
+    args_dict = args.__dict__
+    for key in args_dict.keys():
+        config_str += '%s: %s\n' % (key, args_dict[key])
     config_str += '\nTraining History:'
     log(config_str, filepath=args.log_path, to_console=False)
 
     seed_everything(args.random_seed)
 
+    dataloaders, args = get_dataloaders(args=args)
+    train_loader, train_loader_ssl, test_loader = dataloaders
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = build_timm_model(model_name=args.model,
                              num_classes=args.num_classes).to(device)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.init_params()
     model.to(device)
-
-    dataloaders, args = get_dataloaders(args=args)
-    train_loader, val_loader = dataloaders
 
     os.makedirs(os.path.dirname(args.log_path), exist_ok=True)
     os.makedirs(os.path.dirname(args.model_save_path), exist_ok=True)
+    os.makedirs(os.path.dirname(args.npz_save_path), exist_ok=True)
 
     # Loss function.
     loss_fn_pred = torch.nn.CrossEntropyLoss()
-    if args.loss_fn == 'supervised':
-        loss_fn = torch.nn.CrossEntropyLoss()
-    elif args.loss_fn == 'simclr':
+    if args.learning_method == 'supervised':
+        loss_fn = loss_fn_pred
+    elif args.learning_method == 'simclr':
         loss_fn = simclr
-    elif args.loss_fn == 'simsiam':
+    elif args.learning_method == 'simsiam':
         loss_fn = simsiam
-    elif args.loss_fn == 'barlow_twins':
+    elif args.learning_method == 'barlow_twins':
         loss_fn = barlow_twins
     else:
-        raise ValueError(f'loss function `{args.loss_fn}` not supported.')
+        raise ValueError(f'loss function `{args.learning_method}` not supported.')
 
-    val_metric = 'val_auroc'
-
-    # Compute the results before training.
-    val_loss, val_acc, val_auroc = infer(loader=val_loader, model=model, loss_fn_pred=loss_fn_pred, device=device)
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.learning_rate))
-
+    optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.lr_pretrain))
     lr_scheduler = LinearWarmupCosineAnnealingLR(optimizer=optimizer,
-                                                 warmup_epochs=min(20, args.epochs_pretrain),
-                                                 warmup_start_lr=args.learning_rate_pretrain * 1e-2,
+                                                 warmup_epochs=min(20, args.epochs_pretrain // 2),
+                                                 warmup_start_lr=args.lr_pretrain * 1e-2,
                                                  max_epochs=args.epochs_pretrain)
 
-
-    best_val_metric = 0
-    best_model = None
-
-    # val_metric_pct_list = [20, 30, 40, 50, 60, 70, 80, 90]
-    # is_model_saved = {}
-    # for val_metric_pct in val_metric_pct_list:
-    #     is_model_saved[str(val_metric_pct)] = False
-
-    for epoch_idx in tqdm(range(1, args.max_epoch)):
-        # For SimCLR, only perform validation / linear probing every 5 epochs.
-        skip_epoch_simlr = epoch_idx % 5 != 0
-
-        state_dict = {
-            'train_loss': 0,
-            'train_acc': 0,
-            'val_loss': 0,
-            'val_acc': 0,
-            'acc_diverg': 0,
-        }
-
-        if args.loss_fn == 'simclr':
-            state_dict['train_simclr_pseudoAcc'] = 0
-
-        #
-        '''
-        Training
-        '''
-        model.train()
-        # Because of linear warmup, first step has zero LR. Hence step once before training.
-        lr_scheduler.step()
-        correct, total_count_loss, total_count_acc = 0, 0, 0
-        for _, (x, y_true) in enumerate(tqdm(train_loader)):
-            if args.loss_fn in ['supervised', 'wronglabel']:
-                # Not using contrastive learning.
-
-                B = x.shape[0]
-                assert args.in_channels in [1, 3]
-                if args.in_channels == 1:
-                    # Repeat the channel dimension: 1 channel -> 3 channels.
-                    x = x.repeat(1, 3, 1, 1)
-                x, y_true = x.to(device), y_true.to(device)
-
-                y_pred = model(x)
-                loss = loss_fn(y_pred, y_true)
-                state_dict['train_loss'] += loss.item() * B
-                correct += torch.sum(
-                    torch.argmax(y_pred, dim=-1) == y_true).item()
-                total_count_loss += B
-                total_count_acc += B
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-            elif args.loss_fn == 'simclr':
-                # Using SimCLR.
-
-                x_aug1, x_aug2 = x
-                B = x_aug1.shape[0]
-                assert args.in_channels in [1, 3]
-                if args.in_channels == 1:
-                    # Repeat the channel dimension: 1 channel -> 3 channels.
-                    x_aug1 = x_aug1.repeat(1, 3, 1, 1)
-                    x_aug2 = x_aug2.repeat(1, 3, 1, 1)
-                x_aug1, x_aug2, y_true = x_aug1.to(device), x_aug2.to(
-                    device), y_true.to(device)
-
-                # Train encoder.
-                z1 = model.project(x_aug1)
-                z2 = model.project(x_aug2)
-
-                loss, pseudo_acc = loss_fn_simclr(z1, z2)
-                state_dict['train_loss'] += loss.item() * B
-                state_dict['train_simclr_pseudoAcc'] += pseudo_acc * B
-                total_count_loss += B
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-        if args.loss_fn == 'simclr':
-            state_dict['train_simclr_pseudoAcc'] /= total_count_loss
+    # Step 1. Train for `args.epochs_pretrain` epochs. No validation set.
+    train_loss_arr, train_acc_arr, train_auroc_arr = [], [], []
+    log('Step 1. Pre-training.', filepath=args.log_path, to_console=True)
+    for epoch_idx in tqdm(range(args.epochs_pretrain)):
+        if args.learning_method == 'supervised':
+            loader = train_loader
         else:
-            state_dict['train_acc'] = correct / total_count_acc * 100
-        state_dict['train_loss'] /= total_count_loss
+            loader = train_loader_ssl
+        model, optimizer, lr_scheduler, loss, acc, auroc = \
+            train_epoch(model=model, loader=loader, optimizer=optimizer, lr_scheduler=lr_scheduler,
+                        learning_method=args.learning_method, loss_fn=loss_fn, device=device)
+        log(f'[Epoch {epoch_idx+1}/{args.epochs_pretrain}]. LR={optimizer.param_groups[0]['lr']},' + \
+            f'Training loss={loss:.4f}, ACC={acc:.3f}, AUROC={auroc:.3f}.', filepath=args.log_path, to_console=True)
+        train_loss_arr.append(loss)
+        train_acc_arr.append(acc)
+        train_auroc_arr.append(auroc)
 
-        #
-        '''
-        Validation (or Linear Probing + Validation)
-        '''
-        if args.loss_fn == 'simclr':
-            if not skip_epoch_simlr:
-                # This function call includes validation.
-                probing_acc, val_acc_final, dse_Z, cse_Z, dsmi_Z_X, csmi_Z_X, dsmi_Z_Y, csmi_Z_Y, \
-                    dsmi_blockZ_Xs, dsmi_blockZ_Ys, _ = linear_probing(
-                    config=args,
-                    train_loader=train_loader,
-                    val_loader=val_loader,
-                    model=model,
-                    device=device,
-                    loss_fn_classification=loss_fn,
-                    precomputed_clusters_X=precomputed_clusters_X)
-                state_dict['train_acc'] = probing_acc
-                state_dict['val_loss'] = np.nan
-                state_dict['val_acc'] = val_acc_final
-            else:
-                state_dict['train_acc'] = 'Val skipped for efficiency'
-                state_dict['val_loss'] = 'Val skipped for efficiency'
-                state_dict['val_acc'] = 'Val skipped for efficiency'
+    # Step 2. Linear probe or fine-tune for `args.epochs_finetune` epochs.
+    finetune_loss_arr, finetune_acc_arr, finetune_auroc_arr = [], [], []
+    if args.learning_method != 'supervised':
+        log('Step 2 skipped. Supervised learning does not need this step.', filepath=args.log_path, to_console=True)
+    else:
+        if args.probe:
+            log('Step 2. Linear Probing.', filepath=args.log_path, to_console=True)
+            # Linear probing. Only update the last linear layer.
+            model.freeze_encoder()
+            optimizer = torch.optim.AdamW(model.linear.parameters(), lr=float(args.lr_finetune))
         else:
-            val_loss, val_acc, dse_Z, cse_Z, dsmi_Z_X, csmi_Z_X, dsmi_Z_Y, csmi_Z_Y, \
-                dsmi_blockZ_Xs, dsmi_blockZ_Ys, _ = validate_epoch(
-                args=args,
-                val_loader=val_loader,
-                model=model,
-                device=device,
-                loss_fn=loss_fn,
-                precomputed_clusters_X=precomputed_clusters_X)
-            state_dict['val_loss'] = val_loss
-            state_dict['val_acc'] = val_acc
+            log('Step 2. Fine-tuning.', filepath=args.log_path, to_console=True)
+            # Fine-tuning. Updates the entire model.
+            optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.lr_finetune))
+        lr_scheduler = LinearWarmupCosineAnnealingLR(optimizer=optimizer,
+                                                     warmup_epochs=min(20, args.epochs_finetune // 2),
+                                                     warmup_start_lr=args.lr_finetune * 1e-2,
+                                                     max_epochs=args.epochs_finetune)
+        for epoch_idx in tqdm(range(args.epochs_finetune)):
+            model, optimizer, lr_scheduler, loss, acc, auroc = \
+                train_epoch(model=model, loader=train_loader, optimizer=optimizer, lr_scheduler=lr_scheduler,
+                            learning_method='supervised', loss_fn=loss_fn_pred, device=device)
+            log(f'[Epoch {epoch_idx+1}/{args.epochs_finetune}]. LR={optimizer.param_groups[0]['lr']},' + \
+                f'Tuning loss={loss:.4f}, ACC={acc:.3f}, AUROC={auroc:.3f}.', filepath=args.log_path, to_console=True)
+            finetune_loss_arr.append(loss)
+            finetune_acc_arr.append(acc)
+            finetune_auroc_arr.append(auroc)
 
-        if not (args.loss_fn == 'simclr' and skip_epoch_simlr):
-            state_dict['acc_diverg'] = \
-                state_dict['train_acc'] - state_dict['val_acc']
-        else:
-            state_dict['acc_diverg'] = 'Val skipped for efficiency'
-
-        log('Epoch: %d. %s' % (epoch_idx, print_state_dict(state_dict)),
-            filepath=log_path,
-            to_console=False)
-
-        if not (args.loss_fn == 'simclr' and skip_epoch_simlr):
-            results_dict['epoch'].append(epoch_idx)
-            results_dict['dse_Z'].append(dse_Z)
-            results_dict['cse_Z'].append(cse_Z)
-            results_dict['dsmi_Z_X'].append(dsmi_Z_X)
-            results_dict['csmi_Z_X'].append(csmi_Z_X)
-            results_dict['dsmi_Z_Y'].append(dsmi_Z_Y)
-            results_dict['csmi_Z_Y'].append(csmi_Z_Y)
-            results_dict['val_acc'].append(state_dict['val_acc'])
-            results_dict['dsmi_blockZ_Xs'].append(np.array(dsmi_blockZ_Xs))
-            results_dict['dsmi_blockZ_Ys'].append(np.array(dsmi_blockZ_Ys))
-
-        # Save best model
-        if not (args.loss_fn == 'simclr' and skip_epoch_simlr):
-            if state_dict[val_metric] > best_val_metric:
-                best_val_metric = state_dict[val_metric]
-                best_model = model.state_dict()
-                model_save_path = '%s/%s-%s-%s-ConvInitStd-%s-seed%s-%s' % (
-                    args.checkpoint_dir, args.dataset, args.loss_fn,
-                    args.model, args.conv_init_std, args.random_seed,
-                    '%s_best.pth' % val_metric)
-                torch.save(best_model, model_save_path)
-                log('Best model (so far) successfully saved.',
-                    filepath=log_path,
-                    to_console=False)
-
-            model_save_path = '%s/%s-%s-%s-ConvInitStd-%s-seed%s-epoch-%s.pth' % (
-                args.checkpoint_dir, args.dataset, args.loss_fn,
-                args.model, args.conv_init_std, args.random_seed,
-                epoch_idx)
-            torch.save(model.state_dict(), model_save_path)
-
-        if epoch_idx > 30:
-            break
+    # Step 3. Evaluate on test set.
+    eval_loss, eval_acc, eval_auroc = infer(model=model, loader=test_loader, loss_fn_pred=loss_fn_pred, device=device)
+    log(f'Evaluation loss={eval_loss:.4f}, ACC={eval_acc:.3f}, AUROC={eval_auroc:.3f}.', filepath=args.log_path, to_console=True)
 
     # Save the results after training.
-    save_path_numpy = '%s/%s-%s-%s-ConvInitStd-%s-seed%s/%s' % (
-        args.output_save_path, args.dataset, args.loss_fn, args.model,
-        args.conv_init_std, args.random_seed, 'results.npz')
-    os.makedirs(os.path.dirname(save_path_numpy), exist_ok=True)
-
-    with open(save_path_numpy, 'wb+') as f:
+    with open(args.npz_save_path, 'wb+') as f:
         np.savez(
             f,
-            epoch=np.array(results_dict['epoch']),
-            val_acc=np.array(results_dict['val_acc']),
-            dse_Z=np.array(results_dict['dse_Z']),
-            cse_Z=np.array(results_dict['cse_Z']),
-            dsmi_Z_X=np.array(results_dict['dsmi_Z_X']),
-            csmi_Z_X=np.array(results_dict['csmi_Z_X']),
-            dsmi_Z_Y=np.array(results_dict['dsmi_Z_Y']),
-            csmi_Z_Y=np.array(results_dict['csmi_Z_Y']),
-        )
-
-    # Save block by block DSMI results
-    save_path_numpy = '%s/%s-%s-%s-ConvInitStd-%s-seed%s/%s' % (
-        args.output_save_path, args.dataset, args.loss_fn, args.model,
-        args.conv_init_std, args.random_seed, 'block-results.npz')
-    os.makedirs(os.path.dirname(save_path_numpy), exist_ok=True)
-
-    with open(save_path_numpy, 'wb+') as f:
-        np.savez(
-            f,
-            epoch=np.array(results_dict['epoch']),
-            dsmi_blockZ_Xs=results_dict['dsmi_blockZ_Xs'],
-            dsmi_blockZ_Ys=results_dict['dsmi_blockZ_Ys'],
+            train_loss_arr=np.array(train_loss_arr),
+            train_acc_arr=np.array(train_acc_arr),
+            train_auroc_arr=np.array(train_auroc_arr),
+            finetune_loss_arr=np.array(finetune_loss_arr),
+            finetune_acc_arr=np.array(finetune_acc_arr),
+            finetune_auroc_arr=np.array(finetune_auroc_arr),
+            eval_loss=np.array(eval_loss),
+            eval_acc=np.array(eval_acc),
+            eval_auroc=np.array(eval_auroc),
         )
 
     return
 
 
+def train_epoch(model: torch.nn.Module,
+                loader: torch.utils.data.DataLoader,
+                optimizer: torch.optim.Optimizer,
+                lr_scheduler: torch.optim.lr_scheduler.LRScheduler,
+                learning_method: str,
+                loss_fn: torch.nn.Module,
+                device: torch.device):
+    model.train()
+
+    loss_value = 0
+    y_true_arr, y_pred_arr = None, None
+
+    for batch_items in loader:
+        if learning_method == 'supervised':
+            x, y_true = batch_items
+            assert args.in_channels in [1, 3]
+            if args.in_channels == 1:
+                # Repeat the channel dimension: 1 channel -> 3 channels.
+                x = x.repeat(1, 3, 1, 1)
+            x, y_true = x.to(device), y_true.to(device)
+            y_pred = model(x)
+
+            loss = loss_fn(y_pred, y_true)
+            loss_value += loss.item()
+
+            if y_true_arr is None:
+                y_true_arr = y_true.detach().cpu().numpy()
+                y_pred_arr = y_pred.detach().cpu().numpy()
+            else:
+                y_true_arr = np.vstack((y_true_arr, y_true.detach().cpu().numpy()))
+                y_pred_arr = np.vstack((y_pred_arr, y_pred.detach().cpu().numpy()))
+
+        else:
+            (x_aug1, x_aug2), _ = batch_items
+            assert args.in_channels in [1, 3]
+            if args.in_channels == 1:
+                # Repeat the channel dimension: 1 channel -> 3 channels.
+                x_aug1 = x_aug1.repeat(1, 3, 1, 1)
+                x_aug2 = x_aug2.repeat(1, 3, 1, 1)
+            x_aug1, x_aug2 = x_aug1.to(device), x_aug2.to(device)
+
+            if args.full_grad:
+                x_aug1.requires_grad_()
+                x_aug2.requires_grad_()
+
+            # Train encoder.
+            z1 = model.encode(x_aug1)
+            z2 = model.encode(x_aug2)
+            p1 = model.project(z1)
+            p2 = model.project(z2)
+
+            if args.full_grad:
+                grad_z1 = torch.autograd.grad(outputs=z1, inputs=x_aug1, grad_outputs=torch.ones_like(z1), retain_graph=True)
+                grad_z2 = torch.autograd.grad(outputs=z2, inputs=x_aug2, grad_outputs=torch.ones_like(z2), retain_graph=True)
+                grad_p1 = torch.autograd.grad(outputs=p1, inputs=x_aug1, grad_outputs=torch.ones_like(p1), retain_graph=True)
+                grad_p2 = torch.autograd.grad(outputs=p2, inputs=x_aug2, grad_outputs=torch.ones_like(p2), retain_graph=True)
+                assert len(grad_z1) == len(grad_z2) == len(grad_p1) == len(grad_p2) == 1
+                batch_size = x_aug1.shape[0]
+                z1 = grad_z1[0].reshape(batch_size, -1)
+                z2 = grad_z2[0].reshape(batch_size, -1)
+                p1 = grad_p1[0].reshape(batch_size, -1)
+                p2 = grad_p2[0].reshape(batch_size, -1)
+
+            loss = loss_fn(p1_batch=p1, p2_batch=p2, z1_batch=z1, z2_batch=z2)
+            loss_value += loss.item()
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    lr_scheduler.step()
+
+    loss_value /= len(loader)
+    if y_true_arr is not None:
+        acc = np.mean(accuracy_score(y_true_arr, y_pred_arr))
+        auroc = np.mean(roc_auc_score(y_true_arr, y_pred_arr))
+    else:
+        acc, auroc = -1, -1  # Placeholder for self-supervised learning.
+    return loss_value, acc, auroc
+
+
 @torch.no_grad()
-def infer(loader, model, loss_fn_pred, device):
-    avg_loss = 0
+def infer(model: torch.nn.Module,
+          loader: torch.utils.data.DataLoader,
+          loss_fn_pred: torch.nn.Module,
+          device: torch.device):
+    model.eval()
+
+    loss_value = 0
     y_true_arr, y_pred_arr = None, None
 
     for x, y_true in loader:
-        x = x.to(device)
+        assert args.in_channels in [1, 3]
+        if args.in_channels == 1:
+            # Repeat the channel dimension: 1 channel -> 3 channels.
+            x = x.repeat(1, 3, 1, 1)
+        x, y_true = x.to(device), y_true.to(device)
         y_pred = model(x)
-        loss = loss_fn_pred(y_pred, y_true.to(device))
-        avg_loss += loss.item()
+        loss = loss_fn_pred(y_pred, y_true)
+        loss_value += loss.item()
 
         if y_true_arr is None:
             y_true_arr = y_true.detach().cpu().numpy()
@@ -550,51 +527,10 @@ def infer(loader, model, loss_fn_pred, device):
             y_true_arr = np.vstack((y_true_arr, y_true.detach().cpu().numpy()))
             y_pred_arr = np.vstack((y_pred_arr, y_pred.detach().cpu().numpy()))
 
-    avg_loss /= len(loader)
+    loss_value /= len(loader)
     acc = np.mean(accuracy_score(y_true_arr, y_pred_arr))
     auroc = np.mean(roc_auc_score(y_true_arr, y_pred_arr))
-    return avg_loss, acc, auroc
-
-
-def linear_probing(config: SimpleNamespace,
-                   train_loader: torch.utils.data.DataLoader,
-                   val_loader: torch.utils.data.DataLoader,
-                   model: torch.nn.Module, device: torch.device,
-                   loss_fn_classification: torch.nn.Module,
-                   precomputed_clusters_X: np.array):
-
-    # Separately train linear classifier.
-    model.init_linear()
-    # Note: Need to create another optimizer because the model will keep updating
-    # even after freezing with `requires_grad = False` when `opt` has `momentum`.
-    opt_probing = torch.optim.AdamW(list(model.linear.parameters()),
-                                    lr=float(config.learning_rate_probing))
-
-    lr_scheduler_probing = LinearWarmupCosineAnnealingLR(
-        optimizer=opt_probing,
-        warmup_epochs=min(10, config.probing_epoch // 5),
-        max_epochs=config.probing_epoch)
-
-    for _ in tqdm(range(config.probing_epoch)):
-        # Because of linear warmup, first step has zero LR. Hence step once before training.
-        lr_scheduler_probing.step()
-        probing_acc = linear_probing_epoch(
-            config=config,
-            train_loader=train_loader,
-            model=model,
-            device=device,
-            opt_probing=opt_probing,
-            loss_fn_classification=loss_fn_classification)
-
-    _, val_acc, dse_Z, cse_Z, dsmi_Z_X, csmi_Z_X, dsmi_Z_Y, csmi_Z_Y, dsmi_blockZ_Xs, dsmi_blockZ_Ys, _ = validate_epoch(
-        args=config,
-        val_loader=val_loader,
-        model=model,
-        device=device,
-        loss_fn=loss_fn_classification,
-        precomputed_clusters_X=precomputed_clusters_X)
-
-    return probing_acc, val_acc, dse_Z, cse_Z, dsmi_Z_X, csmi_Z_X, dsmi_Z_Y, csmi_Z_Y, dsmi_blockZ_Xs, dsmi_blockZ_Ys, precomputed_clusters_X
+    return loss_value, acc, auroc
 
 
 def linear_probing_epoch(config: SimpleNamespace,
@@ -639,16 +575,17 @@ def linear_probing_epoch(config: SimpleNamespace,
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, default='cifar10')
-    parser.add_argument('--model', type=str, default='resnet')   # ['resnet', 'resnext', 'convnext', 'vit', 'swin', 'xcit']
-    parser.add_argument('--loss-fn', type=str, default='simclr') # ['simclr', 'simsiam', 'barlow_twins', 'supervised']
-    parser.add_argument('--mrl', action='store_true')            # Whether to use Mahalanobis representation learning.
-    parser.add_argument('--full-grad', action='store_true')      # Whether to use full gradient for similarity computation.
+    parser.add_argument('--model', type=str, default='resnet')           # ['resnet', 'resnext', 'convnext', 'vit', 'swin', 'xcit']
+    parser.add_argument('--learning-method', type=str, default='simclr') # ['simclr', 'simsiam', 'barlow_twins', 'supervised']
+    # parser.add_argument('--mrl', action='store_true')                    # Whether to use Mahalanobis representation learning.
+    parser.add_argument('--full-grad', action='store_true')              # Whether to use full gradient for similarity computation.
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--epochs-pretrain', type=int, default=50)
     parser.add_argument('--epochs-finetune', type=int, default=50)
     parser.add_argument('--lr-pretrain', type=float, default=1e-2)
-    parser.add_argument('--lr-finetune', type=float, default=1e-4)
-    parser.add_argument('--num-workers', type=int, default=8)
+    parser.add_argument('--lr-finetune', type=float, default=1e-4)       # Only relevant to linear probing or fine-tuning in self-supervised learning.
+    parser.add_argument('--probe', action='store_true')                  # If true, linear probing. If false, fine-tuning.
+    parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--random-seed', type=int, default=1)
     parser.add_argument('--dataset-dir', type=str, default='$ROOT_DIR/data/')
     parser.add_argument('--results-dir', type=str, default='$ROOT_DIR/results/')
@@ -659,8 +596,9 @@ if __name__ == '__main__':
     args.dataset_dir = args.dataset_dir.replace('$ROOT_DIR', ROOT_DIR)
     args.results_dir = args.results_dir.replace('$ROOT_DIR', ROOT_DIR)
 
-    curr_run_identifier = f'dataset-{args.dataset}_model-{args.model}_loss-fn-{args.loss_fn}_mrl-{args.mrl}_full-grad-{args.full_grad}_seed-{args.random_seed}'
+    curr_run_identifier = f'dataset-{args.dataset}_model-{args.model}_learning-method-{args.learning_method}_full-grad-{args.full_grad}_seed-{args.random_seed}'
     args.log_path = os.path.join(args.results_dir, curr_run_identifier, 'log.txt')
     args.model_save_path = os.path.join(args.results_dir, curr_run_identifier, 'model.pty')
+    args.npz_save_path = os.path.join(args.results_dir, curr_run_identifier, 'results.npz')
 
-    train(args)
+    main(args)

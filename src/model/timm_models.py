@@ -76,11 +76,7 @@ class TimmModel(torch.nn.Module):
         else:
             setattr(self.encoder, last_layer_name, torch.nn.Identity())
 
-        # This is the linear classifier for fine-tuning and inference.
-        self.linear = torch.nn.Linear(in_features=self.linear_in_features,
-                                      out_features=self.linear_out_features)
-
-        # This is the projection head g(.) for SimCLR training.
+        # This is the projection head g(z).
         self.projection_head = torch.nn.Sequential(
             torch.nn.Linear(in_features=self.linear_in_features,
                             out_features=hidden_dim,
@@ -90,14 +86,24 @@ class TimmModel(torch.nn.Module):
                             out_features=z_dim,
                             bias=True))
 
-    def encode(self, x):
-        return self.encoder(x)
+        # This is the linear classifier for fine-tuning, linear probing, and inference.
+        self.linear = torch.nn.Linear(in_features=self.linear_in_features,
+                                      out_features=self.linear_out_features)
 
-    def project(self, x):
-        return self.projection_head(self.encoder(x))
+    def encode(self, x):
+        z = self.encoder(x)
+        return z
+
+    def project(self, z):
+        p = self.projection_head(z)
+        return p
 
     def forward(self, x):
         return self.linear(self.encoder(x))
+
+    def freeze_encoder(self):
+        for p in self.encoder.parameters():
+            p.requires_grad = False
 
     def init_linear(self):
         torch.nn.init.constant_(self.linear.weight, 0.01)
