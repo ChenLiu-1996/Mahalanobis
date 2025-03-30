@@ -497,7 +497,7 @@ def train_epoch(model: torch.nn.Module,
         auroc = np.mean(roc_auc_score(y_true_arr, y_pred_arr))
     else:
         acc, auroc = -1, -1  # Placeholder for self-supervised learning.
-    return loss_value, acc, auroc
+    return model, optimizer, lr_scheduler, loss_value, acc, auroc
 
 
 @torch.no_grad()
