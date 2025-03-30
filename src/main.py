@@ -356,9 +356,9 @@ def main(args: SimpleNamespace) -> None:
     else:
         optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.lr_pretrain))
         lr_scheduler = LinearWarmupCosineAnnealingLR(optimizer=optimizer,
-                                                    warmup_epochs=min(20, args.epochs_pretrain // 2),
-                                                    warmup_start_lr=args.lr_pretrain * 1e-2,
-                                                    max_epochs=args.epochs_pretrain)
+                                                     warmup_epochs=min(20, args.epochs_pretrain // 2),
+                                                     warmup_start_lr=args.lr_pretrain * 1e-2,
+                                                     max_epochs=args.epochs_pretrain)
 
         # Step 1. Train for `args.epochs_pretrain` epochs. No validation set.
         train_loss_arr, train_acc_arr, train_auroc_arr = [], [], []
@@ -371,7 +371,7 @@ def main(args: SimpleNamespace) -> None:
             model, optimizer, lr_scheduler, loss, acc, auroc = \
                 train_epoch(model=model, loader=loader, optimizer=optimizer, lr_scheduler=lr_scheduler,
                             learning_method=args.learning_method, loss_fn=loss_fn, device=device)
-            log(f'[Epoch {epoch_idx+1}/{args.epochs_pretrain}]. LR={optimizer.param_groups[0]['lr']},' + \
+            log(f'[Epoch {epoch_idx+1}/{args.epochs_pretrain}]. LR={optimizer.param_groups[0]['lr']}, ' + \
                 f'Training loss={loss:.4f}, ACC={acc:.3f}, AUROC={auroc:.3f}.', filepath=args.log_path, to_console=True)
             train_loss_arr.append(loss)
             train_acc_arr.append(acc)
@@ -403,14 +403,14 @@ def main(args: SimpleNamespace) -> None:
                     optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.lr_tuning))
 
                 lr_scheduler = LinearWarmupCosineAnnealingLR(optimizer=optimizer,
-                                                            warmup_epochs=min(20, args.epochs_tuning // 2),
-                                                            warmup_start_lr=args.lr_tuning * 1e-2,
-                                                            max_epochs=args.epochs_tuning)
+                                                             warmup_epochs=min(20, args.epochs_tuning // 2),
+                                                             warmup_start_lr=args.lr_tuning * 1e-2,
+                                                             max_epochs=args.epochs_tuning)
                 for epoch_idx in tqdm(range(args.epochs_tuning)):
                     model, optimizer, lr_scheduler, loss, acc, auroc = \
                         train_epoch(model=model, loader=train_loader, optimizer=optimizer, lr_scheduler=lr_scheduler,
                                     learning_method='supervised', loss_fn=loss_fn_pred, device=device)
-                    log(f'[Epoch {epoch_idx+1}/{args.epochs_tuning}]. LR={optimizer.param_groups[0]['lr']},' + \
+                    log(f'[Epoch {epoch_idx+1}/{args.epochs_tuning}]. LR={optimizer.param_groups[0]['lr']}, ' + \
                         f'Tuning loss={loss:.4f}, ACC={acc:.3f}, AUROC={auroc:.3f}.', filepath=args.log_path, to_console=True)
                     if tuning_method == 'linear_probe':
                         linear_probe_loss_arr.append(loss)
