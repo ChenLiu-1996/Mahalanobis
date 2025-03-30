@@ -559,9 +559,9 @@ def train_epoch(model: torch.nn.Module,
     if y_true_arr is not None:
         acc = accuracy_score(y_true_arr, np.argmax(y_pred_arr, axis=1))
         auroc = roc_auc_score(y_true_arr, y_pred_arr, average='macro', multi_class='ovo')
-        if acc.dtype in [np.float32, np.float64]:
+        if isinstance(acc, np.floating):
             acc = acc.item()
-        if auroc.dtype in [np.float32, np.float64]:
+        if isinstance(auroc, np.floating):
             auroc = auroc.item()
     else:
         acc, auroc = -1, -1  # Placeholder for self-supervised learning.
@@ -600,9 +600,9 @@ def infer(model: torch.nn.Module,
     loss_value /= len(loader)
     acc = accuracy_score(y_true_arr, np.argmax(y_pred_arr, axis=1))
     auroc = roc_auc_score(y_true_arr, y_pred_arr, average='macro', multi_class='ovo')
-    if acc.dtype in [np.float32, np.float64]:
+    if isinstance(acc, np.floating):
         acc = acc.item()
-    if auroc.dtype in [np.float32, np.float64]:
+    if isinstance(auroc, np.floating):
         auroc = auroc.item()
     return loss_value, acc, auroc
 
