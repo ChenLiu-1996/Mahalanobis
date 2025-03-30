@@ -191,7 +191,7 @@ def get_dataloaders(args: SimpleNamespace):
                                              num_workers=args.num_workers,
                                              shuffle=False,
                                              pin_memory=True,
-                                             drop_last=True)
+                                             drop_last=False)
 
     return (train_loader, train_loader_ssl, val_loader), args
 
@@ -306,7 +306,7 @@ def main(args: SimpleNamespace) -> None:
     '''
     The main function of training and evaluation.
     1. Train for `args.epochs_pretrain` epochs. No validation set.
-    2. Linear probe or fine-tune for `args.epochs_finetune` epochs.
+    2. Linear probe or fine-tune for `args.epochs_tuning` epochs.
     3. Evaluate on test set.
     '''
 
@@ -329,8 +329,12 @@ def main(args: SimpleNamespace) -> None:
     model.init_params()
     model.to(device)
 
+    infer(model=model, loader=test_loader, loss_fn_pred=torch.nn.CrossEntropyLoss(), device=device)
+
     os.makedirs(os.path.dirname(args.log_path), exist_ok=True)
-    os.makedirs(os.path.dirname(args.model_save_path), exist_ok=True)
+    os.makedirs(os.path.dirname(args.model_pretrain_save_path), exist_ok=True)
+    os.makedirs(os.path.dirname(args.model_linear_probe_save_path), exist_ok=True)
+    os.makedirs(os.path.dirname(args.model_finetune_save_path), exist_ok=True)
     os.makedirs(os.path.dirname(args.npz_save_path), exist_ok=True)
 
     # Loss function.
@@ -346,60 +350,93 @@ def main(args: SimpleNamespace) -> None:
     else:
         raise ValueError(f'loss function `{args.learning_method}` not supported.')
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.lr_pretrain))
-    lr_scheduler = LinearWarmupCosineAnnealingLR(optimizer=optimizer,
-                                                 warmup_epochs=min(20, args.epochs_pretrain // 2),
-                                                 warmup_start_lr=args.lr_pretrain * 1e-2,
-                                                 max_epochs=args.epochs_pretrain)
-
-    # Step 1. Train for `args.epochs_pretrain` epochs. No validation set.
-    train_loss_arr, train_acc_arr, train_auroc_arr = [], [], []
-    log('Step 1. Pre-training.', filepath=args.log_path, to_console=True)
-    for epoch_idx in tqdm(range(args.epochs_pretrain)):
-        if args.learning_method == 'supervised':
-            loader = train_loader
-        else:
-            loader = train_loader_ssl
-        model, optimizer, lr_scheduler, loss, acc, auroc = \
-            train_epoch(model=model, loader=loader, optimizer=optimizer, lr_scheduler=lr_scheduler,
-                        learning_method=args.learning_method, loss_fn=loss_fn, device=device)
-        log(f'[Epoch {epoch_idx+1}/{args.epochs_pretrain}]. LR={optimizer.param_groups[0]['lr']},' + \
-            f'Training loss={loss:.4f}, ACC={acc:.3f}, AUROC={auroc:.3f}.', filepath=args.log_path, to_console=True)
-        train_loss_arr.append(loss)
-        train_acc_arr.append(acc)
-        train_auroc_arr.append(auroc)
-
-    # Step 2. Linear probe or fine-tune for `args.epochs_finetune` epochs.
-    finetune_loss_arr, finetune_acc_arr, finetune_auroc_arr = [], [], []
-    if args.learning_method != 'supervised':
-        log('Step 2 skipped. Supervised learning does not need this step.', filepath=args.log_path, to_console=True)
+    if os.path.isfile(args.model_pretrain_save_path):
+        log(f'Step 1 skipped. Pre-trained model found at {args.model_pretrain_save_path}.',
+            filepath=args.log_path, to_console=True)
     else:
-        if args.probe:
-            log('Step 2. Linear Probing.', filepath=args.log_path, to_console=True)
-            # Linear probing. Only update the last linear layer.
-            model.freeze_encoder()
-            optimizer = torch.optim.AdamW(model.linear.parameters(), lr=float(args.lr_finetune))
-        else:
-            log('Step 2. Fine-tuning.', filepath=args.log_path, to_console=True)
-            # Fine-tuning. Updates the entire model.
-            optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.lr_finetune))
+        optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.lr_pretrain))
         lr_scheduler = LinearWarmupCosineAnnealingLR(optimizer=optimizer,
-                                                     warmup_epochs=min(20, args.epochs_finetune // 2),
-                                                     warmup_start_lr=args.lr_finetune * 1e-2,
-                                                     max_epochs=args.epochs_finetune)
-        for epoch_idx in tqdm(range(args.epochs_finetune)):
+                                                    warmup_epochs=min(20, args.epochs_pretrain // 2),
+                                                    warmup_start_lr=args.lr_pretrain * 1e-2,
+                                                    max_epochs=args.epochs_pretrain)
+
+        # Step 1. Train for `args.epochs_pretrain` epochs. No validation set.
+        train_loss_arr, train_acc_arr, train_auroc_arr = [], [], []
+        log('Step 1. Pre-training.', filepath=args.log_path, to_console=True)
+        for epoch_idx in tqdm(range(args.epochs_pretrain)):
+            if args.learning_method == 'supervised':
+                loader = train_loader
+            else:
+                loader = train_loader_ssl
             model, optimizer, lr_scheduler, loss, acc, auroc = \
-                train_epoch(model=model, loader=train_loader, optimizer=optimizer, lr_scheduler=lr_scheduler,
-                            learning_method='supervised', loss_fn=loss_fn_pred, device=device)
-            log(f'[Epoch {epoch_idx+1}/{args.epochs_finetune}]. LR={optimizer.param_groups[0]['lr']},' + \
-                f'Tuning loss={loss:.4f}, ACC={acc:.3f}, AUROC={auroc:.3f}.', filepath=args.log_path, to_console=True)
-            finetune_loss_arr.append(loss)
-            finetune_acc_arr.append(acc)
-            finetune_auroc_arr.append(auroc)
+                train_epoch(model=model, loader=loader, optimizer=optimizer, lr_scheduler=lr_scheduler,
+                            learning_method=args.learning_method, loss_fn=loss_fn, device=device)
+            log(f'[Epoch {epoch_idx+1}/{args.epochs_pretrain}]. LR={optimizer.param_groups[0]['lr']},' + \
+                f'Training loss={loss:.4f}, ACC={acc:.3f}, AUROC={auroc:.3f}.', filepath=args.log_path, to_console=True)
+            train_loss_arr.append(loss)
+            train_acc_arr.append(acc)
+            train_auroc_arr.append(auroc)
+        torch.save(model.state_dict(), args.model_pretrain_save_path)
+
+    # Step 2. Linear probe or fine-tune for `args.epochs_tuning` epochs.
+    if os.path.isfile(args.model_linear_probe_save_path) and os.path.isfile(args.model_finetune_save_path):
+        log(f'Step 2 skipped. Linear probed model found at {args.model_linear_probe_save_path} and fine-tuned model found at {args.model_finetune_save_path}.',
+            filepath=args.log_path, to_console=True)
+    else:
+        linear_probe_loss_arr, linear_probe_acc_arr, linear_probe_auroc_arr = [], [], []
+        finetune_loss_arr, finetune_acc_arr, finetune_auroc_arr = [], [], []
+        for tuning_method in ['linear_probe', 'finetune']:
+            if args.learning_method == 'supervised':
+                log('Step 2 skipped. Supervised learning does not need this step.', filepath=args.log_path, to_console=True)
+            else:
+                model.load_state_dict(torch.load(args.model_pretrain_save_path, weights_only=True))
+                log(f'Loaded pre-trained model from {args.model_pretrain_save_path}.',
+                    filepath=args.log_path, to_console=True)
+                if tuning_method == 'linear_probe':
+                    log('Step 2. Linear Probing.', filepath=args.log_path, to_console=True)
+                    # Linear probing. Only update the last linear layer.
+                    model.freeze_encoder()
+                    optimizer = torch.optim.AdamW(model.linear.parameters(), lr=float(args.lr_tuning))
+                else:
+                    log('Step 2. Fine-tuning.', filepath=args.log_path, to_console=True)
+                    # Fine-tuning. Updates the entire model.
+                    optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.lr_tuning))
+
+                lr_scheduler = LinearWarmupCosineAnnealingLR(optimizer=optimizer,
+                                                            warmup_epochs=min(20, args.epochs_tuning // 2),
+                                                            warmup_start_lr=args.lr_tuning * 1e-2,
+                                                            max_epochs=args.epochs_tuning)
+                for epoch_idx in tqdm(range(args.epochs_tuning)):
+                    model, optimizer, lr_scheduler, loss, acc, auroc = \
+                        train_epoch(model=model, loader=train_loader, optimizer=optimizer, lr_scheduler=lr_scheduler,
+                                    learning_method='supervised', loss_fn=loss_fn_pred, device=device)
+                    log(f'[Epoch {epoch_idx+1}/{args.epochs_tuning}]. LR={optimizer.param_groups[0]['lr']},' + \
+                        f'Tuning loss={loss:.4f}, ACC={acc:.3f}, AUROC={auroc:.3f}.', filepath=args.log_path, to_console=True)
+                    if tuning_method == 'linear_probe':
+                        linear_probe_loss_arr.append(loss)
+                        linear_probe_acc_arr.append(acc)
+                        linear_probe_auroc_arr.append(auroc)
+                    else:
+                        finetune_loss_arr.append(loss)
+                        finetune_acc_arr.append(acc)
+                        finetune_auroc_arr.append(auroc)
+                if tuning_method == 'linear_probe':
+                    torch.save(model.state_dict(), args.model_linear_probe_save_path)
+                else:
+                    torch.save(model.state_dict(), args.model_finetune_save_path)
 
     # Step 3. Evaluate on test set.
-    eval_loss, eval_acc, eval_auroc = infer(model=model, loader=test_loader, loss_fn_pred=loss_fn_pred, device=device)
-    log(f'Evaluation loss={eval_loss:.4f}, ACC={eval_acc:.3f}, AUROC={eval_auroc:.3f}.', filepath=args.log_path, to_console=True)
+    model.load_state_dict(torch.load(args.model_linear_probe_save_path, weights_only=True))
+    linear_probe_eval_loss, linear_probe_eval_acc, linear_probe_eval_auroc = \
+        infer(model=model, loader=test_loader, loss_fn_pred=loss_fn_pred, device=device)
+    log(f'[Linear Probing Evaluation] loss={linear_probe_eval_loss:.4f}, ACC={linear_probe_eval_acc:.3f}, AUROC={linear_probe_eval_auroc:.3f}.',
+        filepath=args.log_path, to_console=True)
+
+    model.load_state_dict(torch.load(args.model_finetune_save_path, weights_only=True))
+    finetune_eval_loss, finetune_eval_acc, finetune_eval_auroc = \
+        infer(model=model, loader=test_loader, loss_fn_pred=loss_fn_pred, device=device)
+    log(f'[Fine-tuning Evaluation] loss={linear_probe_eval_loss:.4f}, ACC={linear_probe_eval_acc:.3f}, AUROC={linear_probe_eval_auroc:.3f}.',
+        filepath=args.log_path, to_console=True)
 
     # Save the results after training.
     with open(args.npz_save_path, 'wb+') as f:
@@ -408,12 +445,18 @@ def main(args: SimpleNamespace) -> None:
             train_loss_arr=np.array(train_loss_arr),
             train_acc_arr=np.array(train_acc_arr),
             train_auroc_arr=np.array(train_auroc_arr),
+            linear_probe_loss_arr=np.array(linear_probe_loss_arr),
+            linear_probe_acc_arr=np.array(linear_probe_acc_arr),
+            linear_probe_auroc_arr=np.array(linear_probe_auroc_arr),
             finetune_loss_arr=np.array(finetune_loss_arr),
             finetune_acc_arr=np.array(finetune_acc_arr),
             finetune_auroc_arr=np.array(finetune_auroc_arr),
-            eval_loss=np.array(eval_loss),
-            eval_acc=np.array(eval_acc),
-            eval_auroc=np.array(eval_auroc),
+            linear_probe_eval_loss=np.array(linear_probe_eval_loss),
+            linear_probe_eval_acc=np.array(linear_probe_eval_acc),
+            linear_probe_eval_auroc=np.array(linear_probe_eval_auroc),
+            finetune_eval_loss=np.array(finetune_eval_loss),
+            finetune_eval_acc=np.array(finetune_eval_acc),
+            finetune_eval_auroc=np.array(finetune_eval_auroc),
         )
 
     return
@@ -444,12 +487,14 @@ def train_epoch(model: torch.nn.Module,
             loss = loss_fn(y_pred, y_true)
             loss_value += loss.item()
 
+            y_true_np = y_true.detach().cpu().numpy()                        # shape: (batch size, 1)
+            y_pred_np = torch.softmax(y_pred, dim=1).detach().cpu().numpy()  # shape: (batch size, num classes)
             if y_true_arr is None:
-                y_true_arr = y_true.detach().cpu().numpy()
-                y_pred_arr = y_pred.detach().cpu().numpy()
+                y_true_arr = y_true_np
+                y_pred_arr = y_pred_np
             else:
-                y_true_arr = np.vstack((y_true_arr, y_true.detach().cpu().numpy()))
-                y_pred_arr = np.vstack((y_pred_arr, y_pred.detach().cpu().numpy()))
+                y_true_arr = np.hstack((y_true_arr, y_true_np))
+                y_pred_arr = np.vstack((y_pred_arr, y_pred_np))
 
         else:
             (x_aug1, x_aug2), _ = batch_items
@@ -493,8 +538,12 @@ def train_epoch(model: torch.nn.Module,
 
     loss_value /= len(loader)
     if y_true_arr is not None:
-        acc = np.mean(accuracy_score(y_true_arr, y_pred_arr))
-        auroc = np.mean(roc_auc_score(y_true_arr, y_pred_arr))
+        acc = accuracy_score(y_true_arr, np.argmax(y_pred_arr, axis=1))
+        auroc = roc_auc_score(y_true_arr, y_pred_arr, average='macro', multi_class='ovo')
+        if acc.dtype in [np.float32, np.float64]:
+            acc = acc.item()
+        if auroc.dtype in [np.float32, np.float64]:
+            auroc = auroc.item()
     else:
         acc, auroc = -1, -1  # Placeholder for self-supervised learning.
     return model, optimizer, lr_scheduler, loss_value, acc, auroc
@@ -520,56 +569,23 @@ def infer(model: torch.nn.Module,
         loss = loss_fn_pred(y_pred, y_true)
         loss_value += loss.item()
 
+        y_true_np = y_true.detach().cpu().numpy()                        # shape: (batch size, 1)
+        y_pred_np = torch.softmax(y_pred, dim=1).detach().cpu().numpy()  # shape: (batch size, num classes)
         if y_true_arr is None:
-            y_true_arr = y_true.detach().cpu().numpy()
-            y_pred_arr = y_pred.detach().cpu().numpy()
+            y_true_arr = y_true_np
+            y_pred_arr = y_pred_np
         else:
-            y_true_arr = np.vstack((y_true_arr, y_true.detach().cpu().numpy()))
-            y_pred_arr = np.vstack((y_pred_arr, y_pred.detach().cpu().numpy()))
+            y_true_arr = np.hstack((y_true_arr, y_true_np))
+            y_pred_arr = np.vstack((y_pred_arr, y_pred_np))
 
     loss_value /= len(loader)
-    acc = np.mean(accuracy_score(y_true_arr, y_pred_arr))
-    auroc = np.mean(roc_auc_score(y_true_arr, y_pred_arr))
+    acc = accuracy_score(y_true_arr, np.argmax(y_pred_arr, axis=1))
+    auroc = roc_auc_score(y_true_arr, y_pred_arr, average='macro', multi_class='ovo')
+    if acc.dtype in [np.float32, np.float64]:
+        acc = acc.item()
+    if auroc.dtype in [np.float32, np.float64]:
+        auroc = auroc.item()
     return loss_value, acc, auroc
-
-
-def linear_probing_epoch(config: SimpleNamespace,
-                         train_loader: torch.utils.data.DataLoader,
-                         model: torch.nn.Module, device: torch.device,
-                         opt_probing: torch.optim.Optimizer,
-                         loss_fn_classification: torch.nn.Module):
-    model.train()
-    correct, total_count_acc = 0, 0
-    for _, (x, y_true) in enumerate(train_loader):
-        x_aug1, x_aug2 = x
-        B = x_aug1.shape[0]
-        assert config.in_channels in [1, 3]
-        if config.in_channels == 1:
-            # Repeat the channel dimension: 1 channel -> 3 channels.
-            x_aug1 = x_aug1.repeat(1, 3, 1, 1)
-            x_aug2 = x_aug2.repeat(1, 3, 1, 1)
-        x_aug1, x_aug2, y_true = x_aug1.to(device), x_aug2.to(
-            device), y_true.to(device)
-
-        with torch.no_grad():
-            h1, h2 = model.encode(x_aug1), model.encode(x_aug2)
-        y_pred_aug1, y_pred_aug2 = model.linear(h1), model.linear(h2)
-        loss_aug1 = loss_fn_classification(y_pred_aug1, y_true)
-        loss_aug2 = loss_fn_classification(y_pred_aug2, y_true)
-        loss = (loss_aug1 + loss_aug2) / 2
-        correct += torch.sum(
-            torch.argmax(y_pred_aug1, dim=-1) == y_true).item()
-        correct += torch.sum(
-            torch.argmax(y_pred_aug2, dim=-1) == y_true).item()
-        total_count_acc += 2 * B
-
-        opt_probing.zero_grad()
-        loss.backward()
-        opt_probing.step()
-
-    probing_acc = correct / total_count_acc * 100
-
-    return probing_acc
 
 
 if __name__ == '__main__':
@@ -581,10 +597,9 @@ if __name__ == '__main__':
     parser.add_argument('--full-grad', action='store_true')              # Whether to use full gradient for similarity computation.
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--epochs-pretrain', type=int, default=50)
-    parser.add_argument('--epochs-finetune', type=int, default=50)
+    parser.add_argument('--epochs-tuning', type=int, default=50)
     parser.add_argument('--lr-pretrain', type=float, default=1e-2)
-    parser.add_argument('--lr-finetune', type=float, default=1e-4)       # Only relevant to linear probing or fine-tuning in self-supervised learning.
-    parser.add_argument('--probe', action='store_true')                  # If true, linear probing. If false, fine-tuning.
+    parser.add_argument('--lr-tuning', type=float, default=1e-4)         # Only relevant to self-supervised learning.
     parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--random-seed', type=int, default=1)
     parser.add_argument('--dataset-dir', type=str, default='$ROOT_DIR/data/')
@@ -596,9 +611,11 @@ if __name__ == '__main__':
     args.dataset_dir = args.dataset_dir.replace('$ROOT_DIR', ROOT_DIR)
     args.results_dir = args.results_dir.replace('$ROOT_DIR', ROOT_DIR)
 
-    curr_run_identifier = f'dataset-{args.dataset}_model-{args.model}_learning-method-{args.learning_method}_full-grad-{args.full_grad}_seed-{args.random_seed}'
+    curr_run_identifier = f'dataset-{args.dataset}_model-{args.model}_learning-method-{args.learning_method}_full-grad-{args.full_grad}_PT-epoch-{args.epochs_pretrain}_seed-{args.random_seed}'
     args.log_path = os.path.join(args.results_dir, curr_run_identifier, 'log.txt')
-    args.model_save_path = os.path.join(args.results_dir, curr_run_identifier, 'model.pty')
+    args.model_pretrain_save_path = os.path.join(args.results_dir, curr_run_identifier, 'model_pretrain.pty')
+    args.model_linear_probe_save_path = os.path.join(args.results_dir, curr_run_identifier, 'model_linear_probe.pty')
+    args.model_finetune_save_path = os.path.join(args.results_dir, curr_run_identifier, 'model_finetune.pty')
     args.npz_save_path = os.path.join(args.results_dir, curr_run_identifier, 'results.npz')
 
     main(args)
