@@ -426,17 +426,33 @@ def main(args: SimpleNamespace) -> None:
                     torch.save(model.state_dict(), args.model_finetune_save_path)
 
     # Step 3. Evaluate on test set.
-    model.load_state_dict(torch.load(args.model_linear_probe_save_path, weights_only=True))
-    linear_probe_eval_loss, linear_probe_eval_acc, linear_probe_eval_auroc = \
-        infer(model=model, loader=test_loader, loss_fn_pred=loss_fn_pred, device=device)
-    log(f'[Linear Probing Evaluation] loss={linear_probe_eval_loss:.4f}, ACC={linear_probe_eval_acc:.3f}, AUROC={linear_probe_eval_auroc:.3f}.',
-        filepath=args.log_path, to_console=True)
+    if args.learning_method == 'supervised':
+        model.load_state_dict(torch.load(args.model_pretrain_save_path, weights_only=True))
+        log(f'Supervised training. Loaded pre-trained model from {args.model_pretrain_save_path}.',
+            filepath=args.log_path, to_console=True)
+        linear_probe_eval_loss, linear_probe_eval_acc, linear_probe_eval_auroc = -1, -1, -1
+        finetune_eval_loss, finetune_eval_acc, finetune_eval_auroc = -1, -1, -1
+        supervised_eval_loss, supervised_eval_acc, supervised_eval_auroc = \
+            infer(model=model, loader=test_loader, loss_fn_pred=loss_fn_pred, device=device)
+        log(f'[Supervised Evaluation] loss={supervised_eval_loss:.4f}, ACC={supervised_eval_acc:.3f}, AUROC={supervised_eval_auroc:.3f}.',
+            filepath=args.log_path, to_console=True)
 
-    model.load_state_dict(torch.load(args.model_finetune_save_path, weights_only=True))
-    finetune_eval_loss, finetune_eval_acc, finetune_eval_auroc = \
-        infer(model=model, loader=test_loader, loss_fn_pred=loss_fn_pred, device=device)
-    log(f'[Fine-tuning Evaluation] loss={linear_probe_eval_loss:.4f}, ACC={linear_probe_eval_acc:.3f}, AUROC={linear_probe_eval_auroc:.3f}.',
-        filepath=args.log_path, to_console=True)
+    else:
+        model.load_state_dict(torch.load(args.model_linear_probe_save_path, weights_only=True))
+        log(f'Loaded linear probed model from {args.model_linear_probe_save_path}.',
+            filepath=args.log_path, to_console=True)
+        linear_probe_eval_loss, linear_probe_eval_acc, linear_probe_eval_auroc = \
+            infer(model=model, loader=test_loader, loss_fn_pred=loss_fn_pred, device=device)
+        log(f'[Linear Probing Evaluation] loss={linear_probe_eval_loss:.4f}, ACC={linear_probe_eval_acc:.3f}, AUROC={linear_probe_eval_auroc:.3f}.',
+            filepath=args.log_path, to_console=True)
+
+        model.load_state_dict(torch.load(args.model_finetune_save_path, weights_only=True))
+        log(f'Loaded fine-tuned model from {args.model_finetune_save_path}.',
+            filepath=args.log_path, to_console=True)
+        finetune_eval_loss, finetune_eval_acc, finetune_eval_auroc = \
+            infer(model=model, loader=test_loader, loss_fn_pred=loss_fn_pred, device=device)
+        log(f'[Fine-tuning Evaluation] loss={linear_probe_eval_loss:.4f}, ACC={linear_probe_eval_acc:.3f}, AUROC={linear_probe_eval_auroc:.3f}.',
+            filepath=args.log_path, to_console=True)
 
     # Save the results after training.
     with open(args.npz_save_path, 'wb+') as f:
@@ -451,6 +467,9 @@ def main(args: SimpleNamespace) -> None:
             finetune_loss_arr=np.array(finetune_loss_arr),
             finetune_acc_arr=np.array(finetune_acc_arr),
             finetune_auroc_arr=np.array(finetune_auroc_arr),
+            supervised_eval_loss=np.array(supervised_eval_loss),
+            supervised_eval_acc=np.array(supervised_eval_acc),
+            supervised_eval_auroc=np.array(supervised_eval_auroc),
             linear_probe_eval_loss=np.array(linear_probe_eval_loss),
             linear_probe_eval_acc=np.array(linear_probe_eval_acc),
             linear_probe_eval_auroc=np.array(linear_probe_eval_auroc),
