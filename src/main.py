@@ -483,7 +483,6 @@ def train_epoch(model: torch.nn.Module,
                 p2 = grad_p2[0].view(batch_size, -1)
 
             loss = loss_fn(p1_batch=p1, p2_batch=p2, z1_batch=z1, z2_batch=z2)
-            import pdb; pdb.set_trace()
             loss_value += loss.item()
 
         optimizer.zero_grad()
