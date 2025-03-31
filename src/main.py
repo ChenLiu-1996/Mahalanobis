@@ -394,19 +394,19 @@ def main(args: SimpleNamespace) -> None:
                 log('Step 2. Linear Probing.', filepath=args.log_path, to_console=True)
                 # Linear probing. Only update the last linear layer.
                 model.freeze_encoder()
-                optimizer = torch.optim.AdamW(model.linear.parameters(), lr=float(args.lr_finetune))
+                optimizer = torch.optim.AdamW(model.linear.parameters(), lr=float(args.lr_linear_probe))
                 lr_scheduler = LinearWarmupCosineAnnealingLR(optimizer=optimizer,
                                                             warmup_epochs=min(20, args.epochs_tuning // 2),
-                                                            warmup_start_lr=args.lr_finetune * 1e-2,
+                                                            warmup_start_lr=args.lr_linear_probe * 1e-2,
                                                             max_epochs=args.epochs_tuning)
             else:
                 log('Step 2. Fine-tuning.', filepath=args.log_path, to_console=True)
                 # Fine-tuning. Updates the entire model.
                 model.unfreeze()
-                optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.lr_linear_probe))
+                optimizer = torch.optim.AdamW(model.parameters(), lr=float(args.lr_finetune))
                 lr_scheduler = LinearWarmupCosineAnnealingLR(optimizer=optimizer,
                                                             warmup_epochs=min(20, args.epochs_tuning // 2),
-                                                            warmup_start_lr=args.lr_linear_probe * 1e-2,
+                                                            warmup_start_lr=args.lr_finetune * 1e-2,
                                                             max_epochs=args.epochs_tuning)
             for epoch_idx in tqdm(range(args.epochs_tuning)):
                 model, optimizer, lr_scheduler, loss, acc, auroc = \
@@ -621,7 +621,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs-pretrain', type=int, default=50)
     parser.add_argument('--epochs-tuning', type=int, default=50)
     parser.add_argument('--lr-pretrain', type=float, default=1e-2)
-    parser.add_argument('--lr-linear-probe', type=float, default=1e-3)   # Only relevant to self-supervised learning.
+    parser.add_argument('--lr-linear-probe', type=float, default=1e-2)   # Only relevant to self-supervised learning.
     parser.add_argument('--lr-finetune', type=float, default=1e-4)       # Only relevant to self-supervised learning.
     parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--random-seed', type=int, default=1)
