@@ -375,7 +375,6 @@ def main(args: SimpleNamespace) -> None:
             train_acc_arr.append(acc)
             train_auroc_arr.append(auroc)
         torch.save(model.state_dict(), args.model_pretrain_save_path)
-        del model
 
     # Step 2. Linear probe or fine-tune for `args.epochs_tuning` epochs.
     if os.path.isfile(args.model_linear_probe_save_path) and os.path.isfile(args.model_finetune_save_path):
@@ -388,7 +387,6 @@ def main(args: SimpleNamespace) -> None:
         finetune_loss_arr, finetune_acc_arr, finetune_auroc_arr = [], [], []
 
         for tuning_method in ['linear_probe', 'finetune']:
-            model = build_timm_model(model_name=args.model, num_classes=args.num_classes).to(device)
             model.load_state_dict(torch.load(args.model_pretrain_save_path, weights_only=True))
             log(f'Loaded pre-trained model from {args.model_pretrain_save_path}.',
                 filepath=args.log_path, to_console=True)
@@ -428,11 +426,9 @@ def main(args: SimpleNamespace) -> None:
                 torch.save(model.state_dict(), args.model_linear_probe_save_path)
             else:
                 torch.save(model.state_dict(), args.model_finetune_save_path)
-            del model
 
     # Step 3. Evaluate on test set.
     if args.learning_method == 'supervised':
-        model = build_timm_model(model_name=args.model, num_classes=args.num_classes).to(device)
         model.load_state_dict(torch.load(args.model_pretrain_save_path, weights_only=True))
         log(f'Supervised training. Loaded pre-trained model from {args.model_pretrain_save_path}.',
             filepath=args.log_path, to_console=True)
@@ -442,10 +438,8 @@ def main(args: SimpleNamespace) -> None:
             infer(model=model, loader=test_loader, loss_fn_pred=loss_fn_pred, device=device)
         log(f'[Supervised Evaluation] loss={supervised_eval_loss:.4f}, ACC={supervised_eval_acc:.3f}, AUROC={supervised_eval_auroc:.3f}.',
             filepath=args.log_path, to_console=True)
-        del model
 
     else:
-        model = build_timm_model(model_name=args.model, num_classes=args.num_classes).to(device)
         model.load_state_dict(torch.load(args.model_linear_probe_save_path, weights_only=True))
         log(f'Loaded linear probed model from {args.model_linear_probe_save_path}.',
             filepath=args.log_path, to_console=True)
@@ -459,7 +453,7 @@ def main(args: SimpleNamespace) -> None:
             filepath=args.log_path, to_console=True)
         finetune_eval_loss, finetune_eval_acc, finetune_eval_auroc = \
             infer(model=model, loader=test_loader, loss_fn_pred=loss_fn_pred, device=device)
-        log(f'[Fine-tuning Evaluation] loss={linear_probe_eval_loss:.4f}, ACC={linear_probe_eval_acc:.3f}, AUROC={linear_probe_eval_auroc:.3f}.',
+        log(f'[Fine-tuning Evaluation] loss={finetune_eval_loss:.4f}, ACC={finetune_eval_acc:.3f}, AUROC={finetune_eval_auroc:.3f}.',
             filepath=args.log_path, to_console=True)
         del model
 
