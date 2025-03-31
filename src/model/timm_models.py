@@ -105,6 +105,10 @@ class TimmModel(torch.nn.Module):
         for p in self.encoder.parameters():
             p.requires_grad = False
 
+    def unfreeze(self):
+        for p in self.parameters():
+            p.requires_grad = True
+
     def init_linear(self):
         torch.nn.init.constant_(self.linear.weight, 0.01)
         torch.nn.init.constant_(self.linear.bias, 0)
