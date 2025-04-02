@@ -429,17 +429,20 @@ def main(args: SimpleNamespace) -> None:
 
     # Step 3. Evaluate on test set.
     if args.learning_method == 'supervised':
+        linear_probe_eval_loss, linear_probe_eval_acc, linear_probe_eval_auroc = -1, -1, -1
+        finetune_eval_loss, finetune_eval_acc, finetune_eval_auroc = -1, -1, -1
+
         model.load_state_dict(torch.load(args.model_pretrain_save_path, weights_only=True))
         log(f'Supervised training. Loaded pre-trained model from {args.model_pretrain_save_path}.',
             filepath=args.log_path, to_console=True)
-        linear_probe_eval_loss, linear_probe_eval_acc, linear_probe_eval_auroc = -1, -1, -1
-        finetune_eval_loss, finetune_eval_acc, finetune_eval_auroc = -1, -1, -1
         supervised_eval_loss, supervised_eval_acc, supervised_eval_auroc = \
             infer(model=model, loader=test_loader, loss_fn_pred=loss_fn_pred, device=device)
         log(f'[Supervised Evaluation] loss={supervised_eval_loss:.4f}, ACC={supervised_eval_acc:.3f}, AUROC={supervised_eval_auroc:.3f}.',
             filepath=args.log_path, to_console=True)
 
     else:
+        supervised_eval_loss, supervised_eval_acc, supervised_eval_auroc = -1, -1, -1
+
         model.load_state_dict(torch.load(args.model_linear_probe_save_path, weights_only=True))
         log(f'Loaded linear probed model from {args.model_linear_probe_save_path}.',
             filepath=args.log_path, to_console=True)
